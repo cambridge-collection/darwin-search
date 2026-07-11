@@ -195,8 +195,8 @@ def translate_params(resource_type: str, **url_params):
                 value_final = "(%s)" % val_string
                 q.append(value_final)
             elif re.match(r'^f[0-9]+-date$', name):
-                val_list = value.split(',')
-                val_list.sort()
+                raw_dates = value if isinstance(value, list) else [value]
+                val_list = sorted(d for item in raw_dates for d in item.split(','))
                 fields = ['facet-year', 'facet-year-month', 'facet-year-month-day']
                 for date in val_list:
                     date = re.sub(r'^"(.+?)"$', r'\1', date)
@@ -220,7 +220,10 @@ def translate_params(resource_type: str, **url_params):
             elif re.match(r'^f[0-9]+-.+?$', name):
                 # match old-style xtf facet names f\d+-
                 solr_name = re.sub(r'^f[0-9]+-(.+?)$',r'facet-\1', name)
-                fq.append('%s:"%s"' % (solr_name, re.sub(r'^"(.+?)"$', r'\1', value)))
+                # Multiple values for one facet are ANDed.
+                vals = value if isinstance(value, list) else [value]
+                for v in vals:
+                    fq.append('%s:"%s"' % (solr_name, re.sub(r'^"(.+?)"$', r'\1', v)))
             elif re.match(r'^(facet|s)-.+?$', name):
                 # Add facet params starting facet- or s- (only allowed on site)
                 fq.append('%s:"%s"' % (name, re.sub(r'^"(.+?)"$', r'\1', value)))
@@ -426,7 +429,7 @@ async def get_items(request: Request,
     #print(request.query_params.keys())
     for x in request.query_params.keys():
         if re.match(r'^f[0-9]+-.+?$', x):
-            facets[x]=request.query_params[x]
+            facets[x] = request.query_params.getlist(x)
     #original_sort = None
     #r = re.compile("^collection-slug:")
 
