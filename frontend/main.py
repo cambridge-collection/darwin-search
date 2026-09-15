@@ -196,7 +196,7 @@ def translate_params(resource_type: str, **url_params):
                 q.append(value_final)
             elif re.match(r'^f[0-9]+-date$', name):
                 raw_dates = value if isinstance(value, list) else [value]
-                val_list = sorted(d for item in raw_dates for d in item.split(','))
+                val_list = sorted({d for item in raw_dates for d in item.split(',')})
                 fields = ['facet-year', 'facet-year-month', 'facet-year-month-day']
                 for date in val_list:
                     date = re.sub(r'^"(.+?)"$', r'\1', date)
@@ -251,7 +251,7 @@ def translate_params(resource_type: str, **url_params):
                 value_final = "(%s)" % val_string
                 q.append(":".join([name,value_final]))
 
-    solr_params['fq'] = fq
+    solr_params['fq'] = list(dict.fromkeys(fq))
 
     # Hack to ensure that empty q string or * returns all records
     # The whole code that generates the query string will need to be re-examined to deal with this better
