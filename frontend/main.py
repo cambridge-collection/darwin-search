@@ -33,6 +33,10 @@ SOLR_URL = 'http://%s:%s' % (SOLR_HOST, SOLR_PORT)
 
 INTERNAL_ERROR_STATUS_CODE = 500
 
+# (connect, read) seconds, kept well under gunicorn's --timeout in the Dockerfile
+# so a hung Solr surfaces as a 502 rather than the arbiter SIGKILLing the worker.
+SOLR_SEARCH_TIMEOUT = (5, 15)
+
 # Core names
 ITEM_CORE = 'dcp'
 PAGE_CORE = 'site'
@@ -284,7 +288,7 @@ def generate_datestring(year, month, day):
         return result
 
 
-async def delete_resource(resource_type: str, file_id: str):
+def delete_resource(resource_type: str, file_id: str):
     delete_query = "fileID:%s" % file_id
     delete_cmd = {'delete': {'query': delete_query}}
 
@@ -301,7 +305,7 @@ async def delete_resource(resource_type: str, file_id: str):
     return status_code
 
 
-async def get_request(resource_type: str, **kwargs):
+def get_request(resource_type: str, **kwargs):
     core = get_core_name(resource_type)
     try:
         params = kwargs.copy()
@@ -315,14 +319,20 @@ async def get_request(resource_type: str, **kwargs):
                              params=solr_params,
                              headers={"content-type": "application/json; charset=UTF-8"},
                              #json=facet_query,
-                             timeout=60)
+                             timeout=SOLR_SEARCH_TIMEOUT)
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
-        if hasattr(e.response, 'text'):
-            results = json.loads(e.response.text)
-            raise HTTPException(status_code=results["responseHeader"]["status"], detail=results["error"]["msg"])
-        else:
+        response = getattr(e, 'response', None)
+        if response is None:
             raise HTTPException(status_code=502, detail=str(e).split(':')[-1])
+        try:
+            results = response.json()
+        except ValueError:
+            results = {}
+        # Solr omits responseHeader entirely while its cores are still loading.
+        status_code = results.get('responseHeader', {}).get('status') or response.status_code
+        detail = results.get('error', {}).get('msg') or response.reason or str(e)
+        raise HTTPException(status_code=status_code, detail=detail)
     result = r.json()
     if 'original_sort' in kwargs and 'sort' in result['responseHeader']['params']:
         result['responseHeader']['params']['sort'] = kwargs["original_sort"]
@@ -367,7 +377,7 @@ def ensure_urlencoded(var, safe=''):
 
 
 @app.get("/pages")
-async def get_pages(request: Request,
+def get_pages(request: Request,
                     keyword: List[str] = Query(default=None),
                     s_commentary: Union[str, None] = Query(default=None, alias="s-commentary"),
                     s_key_stage: Union[str, None] = Query(default=None, alias="s-key-stage"),
@@ -395,12 +405,12 @@ async def get_pages(request: Request,
               "page": page,
               "rows": rows_final
               }
-    r = await get_request('pages', **params, **facets)
+    r = get_request('pages', **params, **facets)
     return r
 
 
 @app.get("/items")
-async def get_items(request: Request,
+def get_items(request: Request,
               q: List[str] = Query(default=None),
               fq: List[str] = Query(default=None),
               sort: Union[str, None] = None,
@@ -477,12 +487,12 @@ async def get_items(request: Request,
               "day-max": day_max,
               "search-date-type": search_date_type
               }
-    r = await get_request('items', **params, **facets)
+    r = get_request('items', **params, **facets)
     return r
 
 
 @app.get("/json/letters")
-async def get_items(q: List[str] = Query(default=None),
+def get_items(q: List[str] = Query(default=None),
               fq: List[str] = Query(default=None)):
 
     for i in ["facet-document-type:letter", "facet-entry-cancelled:No", "facet-darwin-letter:Yes"]:
@@ -496,7 +506,7 @@ async def get_items(q: List[str] = Query(default=None),
     # Limit params passed through to SOLR
     # Add facet to exclude collections from results
     params = {"q": q_final, "fq": fq, "sort": "sort-date asc", "rows": 99999, "fl": "id,path,title,date,displayDate,dateStart,direction,deprecated,sender,recipient,url,summary,search-correspondent-id", "hl": "false", "facet.field": ["direction", "facet-document-type"]}
-    r = await get_request('items', **params)
+    r = get_request('items', **params)
 
     counts = {"To": 0, "From": 0, "3rdParty": 0, "letter": 0, "people": 0, "bibliography": 0}
     dir = r['facet_counts']['facet_fields']['direction']
@@ -526,14 +536,14 @@ async def get_items(q: List[str] = Query(default=None),
     return output
 
 @app.get("/summary")
-async def get_summary(q: List[str] = Query(default=None),
+def get_summary(q: List[str] = Query(default=None),
                 fq: Union[str, None] = None):
     q_final = ' AND '.join(q) if hasattr(q, '__iter__') else q
 
     # Very few params are relevant to the summary view
     params = {"q": q_final, "fq": fq}
 
-    r = await get_request('items', **params)
+    r = get_request('items', **params)
 
     # This query returns the first page of results and the areas of the response that will
     # principally be useful are the responseHeader, response (but not response > docs),
@@ -583,10 +593,10 @@ async def update_item(request: Request):
 
 
 @app.delete("/item/{file_id}")
-async def delete_item(file_id: str):
-    return await delete_resource('item', file_id)
+def delete_item(file_id: str):
+    return delete_resource('item', file_id)
 
 
 @app.delete("/page/{file_id}")
-async def delete_collection(file_id: str):
-    return await delete_resource('page', file_id)
+def delete_collection(file_id: str):
+    return delete_resource('page', file_id)
