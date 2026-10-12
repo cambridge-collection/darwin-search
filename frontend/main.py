@@ -441,23 +441,44 @@ def generate_datestring(year, month, day):
         return result
 
 
+def http_exception_from_request_error(e: requests.exceptions.RequestException):
+    response = getattr(e, "response", None)
+    if response is None:
+        return HTTPException(status_code=502, detail=str(e).split(":")[-1])
+    try:
+        results = response.json()
+    except ValueError:
+        results = {}
+    # Solr omits responseHeader entirely while its cores are still loading.
+    status_code = (
+        results.get("responseHeader", {}).get("status") or response.status_code
+    )
+    detail = results.get("error", {}).get("msg") or response.reason or str(e)
+    return HTTPException(status_code=status_code, detail=detail)
+
+
 def delete_resource(resource_type: str, file_id: str):
     delete_query = "fileID:%s" % file_id
     delete_cmd = {"delete": {"query": delete_query}}
 
     core = get_core_name(resource_type)
-    if core:
+    if not core:
+        raise HTTPException(
+            status_code=INTERNAL_ERROR_STATUS_CODE,
+            detail="No core for resource type %s" % resource_type,
+        )
+    try:
         r = requests.post(
             url="%s/solr/%s/update" % (SOLR_URL, core),
             headers={"content-type": "application/json; charset=UTF-8"},
             json=delete_cmd,
             timeout=60,
         )
-        status_code = r.status_code
-    else:
-        status_code = INTERNAL_ERROR_STATUS_CODE
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise http_exception_from_request_error(e)
 
-    return status_code
+    return r.status_code
 
 
 def get_request(resource_type: str, **kwargs):
@@ -479,19 +500,7 @@ def get_request(resource_type: str, **kwargs):
         )
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
-        response = getattr(e, "response", None)
-        if response is None:
-            raise HTTPException(status_code=502, detail=str(e).split(":")[-1])
-        try:
-            results = response.json()
-        except ValueError:
-            results = {}
-        # Solr omits responseHeader entirely while its cores are still loading.
-        status_code = (
-            results.get("responseHeader", {}).get("status") or response.status_code
-        )
-        detail = results.get("error", {}).get("msg") or response.reason or str(e)
-        raise HTTPException(status_code=status_code, detail=detail)
+        raise http_exception_from_request_error(e)
     result = r.json()
     if "original_sort" in kwargs and "sort" in result["responseHeader"]["params"]:
         result["responseHeader"]["params"]["sort"] = kwargs["original_sort"]
@@ -511,7 +520,7 @@ async def put_item(resource_type: str, data, params):
         )
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
-        raise e
+        raise http_exception_from_request_error(e)
     status_code = r.status_code
 
     return status_code
@@ -760,12 +769,12 @@ async def update_page(request: Request):
         logger.info(f"Indexing %s" % json_dict["fileID"])
         status_code = await put_item("page", data, {"f": ["$FQN:/**"]})
     else:
-        logger.info(
-            f"ERROR: site JSON does not seem to conform to expectations: %s"
+        detail = (
+            "site JSON does not seem to conform to expectations: %s"
             % json_dict["fileID"]
         )
-        # I wasn't sure what status_code to use for invalid document.
-        status_code = INTERNAL_ERROR_STATUS_CODE
+        logger.error("ERROR: %s" % detail)
+        raise HTTPException(status_code=400, detail=detail)
     return status_code
 
 
@@ -785,12 +794,12 @@ async def update_item(request: Request):
         logger.info(f"Indexing %s" % json_dict["fileID"])
         status_code = await put_item("item", data, {"f": ["$FQN:/**", "/*"]})
     else:
-        logger.info(
-            f"ERROR: item JSON does not seem to conform to expectations: %s"
+        detail = (
+            "item JSON does not seem to conform to expectations: %s"
             % json_dict["fileID"]
         )
-        # I wasn't sure what status_code to use for invalid document.
-        status_code = INTERNAL_ERROR_STATUS_CODE
+        logger.error("ERROR: %s" % detail)
+        raise HTTPException(status_code=400, detail=detail)
     return status_code
 
 
