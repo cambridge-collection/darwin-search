@@ -147,7 +147,7 @@ SOLR_URL = "http://%s:%s" % (SOLR_HOST, SOLR_PORT)
 INTERNAL_ERROR_STATUS_CODE = 500
 
 # (connect, read) seconds, kept well under gunicorn's --timeout in the Dockerfile
-# so a hung Solr surfaces as a 502 rather than the arbiter SIGKILLing the worker.
+# so a hung Solr surfaces as a 504 rather than the arbiter SIGKILLing the worker.
 SOLR_SEARCH_TIMEOUT = (5, 15)
 
 # Core names
@@ -444,7 +444,8 @@ def generate_datestring(year, month, day):
 def http_exception_from_request_error(e: requests.exceptions.RequestException):
     response = getattr(e, "response", None)
     if response is None:
-        return HTTPException(status_code=502, detail=str(e).split(":")[-1])
+        status_code = 504 if isinstance(e, requests.exceptions.Timeout) else 502
+        return HTTPException(status_code=status_code, detail=str(e).split(":")[-1])
     try:
         results = response.json()
     except ValueError:
