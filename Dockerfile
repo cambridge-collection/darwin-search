@@ -4,7 +4,8 @@ WORKDIR /code
 
 COPY ./requirements.txt /code/requirements.txt
 
-RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
+RUN pip install --no-cache-dir --cert /etc/ssl/certs/ca-certificates.crt pip==26.2.2 \
+    && pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
 COPY frontend /code/frontend
 
